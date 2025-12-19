@@ -26,3 +26,18 @@ bool loadWiFiCredentials(String& ssid, String& password) {
 String getCurrentSSID() {
   return preferences.getString("ssid", WIFI_SSID);
 }
+
+void saveServerHost(const String& host) {
+  preferences.putString("server_host", host);
+  Serial.println("Server host saved to NVS: " + host);
+}
+
+bool loadServerHost(String& host) {
+  host = preferences.getString("server_host", SERVER_HOST);
+  // Return true if we have stored server host (not default)
+  return preferences.isKey("server_host");
+}
+
+String getCurrentServerHost() {
+  return preferences.getString("server_host", SERVER_HOST);
+}

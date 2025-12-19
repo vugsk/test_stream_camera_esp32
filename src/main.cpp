@@ -93,18 +93,27 @@ void loop() {
     case STATE_INIT:
       // Check if we have saved WiFi credentials
       if (loadWiFiCredentials(ssid, password) && ssid.length() > 0) {
-        Serial.println("Found saved WiFi credentials, attempting connection...");
-        connectionState = STATE_WIFI_CONNECTING;
-        wifiRetryCount = 0;
-        stateStartTime = now;
-        
-        if (initWiFi()) {
-          connectionState = STATE_WIFI_CONNECTED;
-          esp_wifi_set_ps(WIFI_PS_NONE);
-          Serial.println("WiFi connected successfully!");
-        } else {
-          connectionState = STATE_WIFI_RETRY;
+        // Also check if server host is configured
+        String serverHost = getCurrentServerHost();
+        if (serverHost.length() == 0 || serverHost == "0.0.0.0") {
+          Serial.println("WiFi found but server host not configured. Starting Bluetooth...");
+          connectionState = STATE_BLUETOOTH_WAITING;
           stateStartTime = now;
+          startBluetoothConfig();
+        } else {
+          Serial.println("Found saved WiFi credentials and server host, attempting connection...");
+          connectionState = STATE_WIFI_CONNECTING;
+          wifiRetryCount = 0;
+          stateStartTime = now;
+          
+          if (initWiFi()) {
+            connectionState = STATE_WIFI_CONNECTED;
+            esp_wifi_set_ps(WIFI_PS_NONE);
+            Serial.println("WiFi connected successfully!");
+          } else {
+            connectionState = STATE_WIFI_RETRY;
+            stateStartTime = now;
+          }
         }
       } else {
         Serial.println("No WiFi credentials found, starting Bluetooth...");
@@ -143,6 +152,13 @@ void loop() {
       if (hasNewWiFiCredentials()) {
         if (getReceivedCredentials(ssid, password)) {
           Serial.println("New WiFi credentials received, connecting...");
+          
+          // Check if server host was also received
+          if (hasNewServerHost()) {
+            String newHost = getReceivedServerHost();
+            setServerHost(newHost);
+          }
+          
           stopBluetoothConfig();
           
           connectionState = STATE_WIFI_CONNECTING;

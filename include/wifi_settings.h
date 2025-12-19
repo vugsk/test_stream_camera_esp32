@@ -16,4 +16,13 @@ bool loadWiFiCredentials(String& ssid, String& password);
 // Get current WiFi SSID
 String getCurrentSSID();
 
+// Save server host to NVS
+void saveServerHost(const String& host);
+
+// Load server host from NVS
+bool loadServerHost(String& host);
+
+// Get current server host
+String getCurrentServerHost();
+
 #endif // WIFI_SETTINGS_H

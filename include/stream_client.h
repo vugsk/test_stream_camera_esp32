@@ -36,4 +36,10 @@ unsigned long getFailedFrames();
 // Получить статус стриминга
 String getStreamingStatus();
 
+// Set server host dynamically
+void setServerHost(const String& host);
+
+// Get current server host
+String getServerHost();
+
 #endif // STREAM_CLIENT_H

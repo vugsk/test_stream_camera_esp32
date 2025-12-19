@@ -64,6 +64,11 @@ bool getReceivedCredentials(String& ssid, String& password) {
   return true;
 }
 
+
+// Для совместимости с интерфейсом
+bool hasNewServerHost() { return false; }
+String getReceivedServerHost() { return ""; }
+
 void handleBluetoothConfig() {
   if (!btActive) return;
   
@@ -75,44 +80,68 @@ void handleBluetoothConfig() {
     if (received.length() > 0) {
       Serial.println("Received BT data: " + received);
       
-      // Try to parse JSON: {"ssid":"network","password":"pass"}
+      // Try to parse JSON: {"ssid":"network","password":"pass","server_host":"1.2.3.4"}
       JsonDocument doc;
       DeserializationError error = deserializeJson(doc, received);
-      
       if (!error) {
         if (doc["ssid"].is<const char*>() && doc["password"].is<const char*>()) {
           receivedSSID = doc["ssid"].as<String>();
           receivedPassword = doc["password"].as<String>();
-          
+          String serverHost = "";
+          if (doc["server_host"].is<const char*>()) {
+            serverHost = doc["server_host"].as<String>();
+          }
           if (receivedSSID.length() > 0) {
             newCredentialsReceived = true;
             Serial.println("WiFi credentials received via Bluetooth");
             Serial.println("SSID: " + receivedSSID);
-            
+            if (serverHost.length() > 0) {
+              Serial.println("Server host: " + serverHost);
+              saveServerHost(serverHost);
+            }
             // Send confirmation
             SerialBT.println("{\"status\":\"ok\",\"message\":\"Credentials received\"}");
-            
             // Save credentials
             saveWiFiCredentials(receivedSSID, receivedPassword);
           }
         }
       } else {
-        // Try simple format: SSID,PASSWORD
+        // Try simple format: SSID,PASSWORD or SSID,PASSWORD,SERVER_HOST
         int commaIndex = received.indexOf(',');
         if (commaIndex > 0) {
-          receivedSSID = received.substring(0, commaIndex);
-          receivedPassword = received.substring(commaIndex + 1);
-          
-          receivedSSID.trim();
-          receivedPassword.trim();
-          
-          if (receivedSSID.length() > 0) {
-            newCredentialsReceived = true;
-            Serial.println("WiFi credentials received (simple format)");
-            Serial.println("SSID: " + receivedSSID);
-            
-            SerialBT.println("OK");
-            saveWiFiCredentials(receivedSSID, receivedPassword);
+          int commaIndex2 = received.indexOf(',', commaIndex + 1);
+          if (commaIndex2 > 0) {
+            // SSID,PASSWORD,SERVER_HOST
+            receivedSSID = received.substring(0, commaIndex);
+            receivedPassword = received.substring(commaIndex + 1, commaIndex2);
+            String serverHost = received.substring(commaIndex2 + 1);
+            receivedSSID.trim();
+            receivedPassword.trim();
+            serverHost.trim();
+            if (receivedSSID.length() > 0) {
+              newCredentialsReceived = true;
+              Serial.println("WiFi credentials received (simple format)");
+              Serial.println("SSID: " + receivedSSID);
+              if (serverHost.length() > 0) {
+                Serial.println("Server host: " + serverHost);
+                saveServerHost(serverHost);
+              }
+              SerialBT.println("OK");
+              saveWiFiCredentials(receivedSSID, receivedPassword);
+            }
+          } else {
+            // SSID,PASSWORD
+            receivedSSID = received.substring(0, commaIndex);
+            receivedPassword = received.substring(commaIndex + 1);
+            receivedSSID.trim();
+            receivedPassword.trim();
+            if (receivedSSID.length() > 0) {
+              newCredentialsReceived = true;
+              Serial.println("WiFi credentials received (simple format)");
+              Serial.println("SSID: " + receivedSSID);
+              SerialBT.println("OK");
+              saveWiFiCredentials(receivedSSID, receivedPassword);
+            }
           }
         }
       }

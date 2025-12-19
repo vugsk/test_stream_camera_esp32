@@ -2,6 +2,7 @@
 #include "config.h"
 #include "camera.h"
 #include "wifi_client.h"
+#include "wifi_settings.h"
 #include <WiFi.h>
 
 static bool streamingEnabled = false;
@@ -13,6 +14,10 @@ static unsigned long streamStartTime = 0;
 static unsigned long lastReconnect = 0;
 static WiFiClient client;
 static bool clientConnected = false;
+
+// Динамический адрес сервера (загружается из NVS)
+static String serverHost = SERVER_HOST;
+static uint16_t serverPort = SERVER_PORT;
 
 // Минимальный интервал между переподключениями (мс)
 static const unsigned long RECONNECT_INTERVAL = 1000;
@@ -34,6 +39,10 @@ void initStreaming() {
   framesSent = 0;
   failedFrames = 0;
   clientConnected = false;
+  
+  // Load server host from NVS
+  serverHost = getCurrentServerHost();
+  
   Serial.println("Streaming initialized");
 }
 
@@ -67,14 +76,14 @@ static bool ensureConnected() {
   // Подключаемся
   client.setTimeout(1000);
   
-  if (client.connect(SERVER_HOST, SERVER_PORT)) {
+  if (client.connect(serverHost.c_str(), serverPort)) {
     clientConnected = true;
     client.setNoDelay(true);  // Отключаем алгоритм Нэйгла для минимальной задержки
-    Serial.println("Connected to server");
+    Serial.println("Connected to server: " + serverHost);
     return true;
   }
   
-  Serial.println("Failed to connect to server");
+  Serial.println("Failed to connect to server: " + serverHost);
   return false;
 }
 
@@ -93,7 +102,7 @@ bool startStreaming() {
   // Пробуем подключиться сразу
   ensureConnected();
   
-  Serial.printf("Streaming started to %s:%d%s\n", SERVER_HOST, SERVER_PORT, STREAM_PATH);
+  Serial.printf("Streaming started to %s:%d%s\n", serverHost.c_str(), serverPort, STREAM_PATH);
   return true;
 }
 
@@ -120,7 +129,7 @@ static inline bool sendFrameData(camera_fb_t* fb) {
   
   // Build HTTP header
   int headerLen = snprintf(httpHeader, sizeof(httpHeader), HEADER_TEMPLATE,
-    STREAM_PATH, SERVER_HOST, SERVER_PORT, fb->len, framesSent);
+    STREAM_PATH, serverHost.c_str(), serverPort, fb->len, framesSent);
   
   // Send header
   size_t sent = client.write((uint8_t*)httpHeader, headerLen);
@@ -208,4 +217,20 @@ String getStreamingStatus() {
   } else {
     return "Streaming: OFF";
   }
+}
+
+void setServerHost(const String& host) {
+  serverHost = host;
+  Serial.println("Server host updated to: " + serverHost);
+  
+  // Reconnect with new server address
+  if (streamingEnabled) {
+    client.stop();
+    clientConnected = false;
+    ensureConnected();
+  }
+}
+
+String getServerHost() {
+  return serverHost;
 }
