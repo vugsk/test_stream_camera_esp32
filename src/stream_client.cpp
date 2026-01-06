@@ -3,6 +3,7 @@
 #include "camera.h"
 #include "wifi_client.h"
 #include "wifi_settings.h"
+#include "sd_recorder.h"
 #include <WiFi.h>
 
 static bool streamingEnabled = false;
@@ -16,11 +17,14 @@ static WiFiClient client;
 static bool clientConnected = false;
 
 // Динамический адрес сервера (загружается из NVS)
-static String serverHost = SERVER_HOST;
-static uint16_t serverPort = SERVER_PORT;
+static String serverHost = "";
+
+// Счетчик неудачных подключений к серверу
+static int serverConnectionFailures = 0;
+static const int MAX_SERVER_CONNECTION_FAILURES = 5;
 
 // Минимальный интервал между переподключениями (мс)
-static const unsigned long RECONNECT_INTERVAL = 1000;
+static const unsigned long RECONNECT_INTERVAL = 3000;
 
 // Кэшированные данные для HTTP запроса (не пересоздаём каждый раз)
 static char httpHeader[256];
@@ -39,11 +43,10 @@ void initStreaming() {
   framesSent = 0;
   failedFrames = 0;
   clientConnected = false;
+  serverConnectionFailures = 0;
   
-  // Load server host from NVS
+  // Загружаем адрес сервера из NVS
   serverHost = getCurrentServerHost();
-  
-  Serial.println("Streaming initialized");
 }
 
 void setStreamFPS(int fps) {
@@ -59,7 +62,13 @@ int getStreamFPS() {
 // Подключение к серверу с persistent connection
 static bool ensureConnected() {
   if (client.connected()) {
+    serverConnectionFailures = 0;
     return true;
+  }
+  
+  // Если достигли лимита ошибок - не пытаемся подключаться
+  if (serverConnectionFailures >= MAX_SERVER_CONNECTION_FAILURES) {
+    return false;
   }
   
   // Ограничиваем частоту переподключений
@@ -70,20 +79,24 @@ static bool ensureConnected() {
   lastReconnect = now;
   
   clientConnected = false;
-  client.stop();
-  delay(10);  // Небольшая пауза перед переподключением
+  if (client.connected()) {
+    client.stop();
+  }
+  delay(100);
   
   // Подключаемся
-  client.setTimeout(1000);
+  client.setTimeout(500);  // Уменьшен таймаут для быстрого обнаружения проблем
   
-  if (client.connect(serverHost.c_str(), serverPort)) {
+  if (client.connect(serverHost.c_str(), SERVER_PORT)) {
     clientConnected = true;
-    client.setNoDelay(true);  // Отключаем алгоритм Нэйгла для минимальной задержки
-    Serial.println("Connected to server: " + serverHost);
+    client.setNoDelay(true);
+    serverConnectionFailures = 0;
     return true;
   }
   
-  Serial.println("Failed to connect to server: " + serverHost);
+  serverConnectionFailures++;
+  Serial.printf("Failed to connect to server (attempt %d/%d)\n", 
+                serverConnectionFailures, MAX_SERVER_CONNECTION_FAILURES);
   return false;
 }
 
@@ -98,11 +111,12 @@ bool startStreaming() {
   failedFrames = 0;
   streamStartTime = millis();
   lastFrameTime = 0;
+  serverConnectionFailures = 0;
   
   // Пробуем подключиться сразу
   ensureConnected();
   
-  Serial.printf("Streaming started to %s:%d%s\n", serverHost.c_str(), serverPort, STREAM_PATH);
+  Serial.println("Streaming started");
   return true;
 }
 
@@ -110,7 +124,6 @@ void stopStreaming() {
   streamingEnabled = false;
   client.stop();
   clientConnected = false;
-  Serial.println("Streaming stopped");
 }
 
 // Fast frame sending via raw socket
@@ -120,26 +133,25 @@ static inline bool sendFrameData(camera_fb_t* fb) {
     return false;
   }
   
-  // Clear incoming buffer
+  // Быстрая очистка входящего буфера (не более 100 байт)
   int clearCount = 0;
-  while (client.available() && clearCount < 1000) {
+  while (client.available() && clearCount < 100) {
     client.read();
     clearCount++;
   }
   
   // Build HTTP header
   int headerLen = snprintf(httpHeader, sizeof(httpHeader), HEADER_TEMPLATE,
-    STREAM_PATH, serverHost.c_str(), serverPort, fb->len, framesSent);
+    STREAM_PATH, serverHost.c_str(), SERVER_PORT, fb->len, framesSent);
   
   // Send header
   size_t sent = client.write((uint8_t*)httpHeader, headerLen);
   if (sent != headerLen) {
-    Serial.println("Failed to send header");
     return false;
   }
   
   // Send data in larger chunks for HD frames (faster transfer)
-  const size_t CHUNK_SIZE = 8192;  // 8KB chunks for better performance
+  const size_t CHUNK_SIZE = 16384;  // 16KB chunks for maximum performance
   size_t offset = 0;
   
   while (offset < fb->len) {
@@ -147,7 +159,6 @@ static inline bool sendFrameData(camera_fb_t* fb) {
     sent = client.write(fb->buf + offset, toSend);
     
     if (sent != toSend) {
-      Serial.printf("Failed to send data at offset %d\n", offset);
       return false;
     }
     
@@ -177,9 +188,22 @@ void sendFrame() {
     return;
   }
   
-  // Отправляем
+  // Записываем на SD карту (если включено)
+  if (isRecordingEnabled() && isSDCardPresent()) {
+    recordFrame(fb->buf, fb->len);
+  }
+  
+  // Отправляем на сервер
   if (sendFrameData(fb)) {
     framesSent++;
+    
+    // Async чтение ответа сервера (не ждем полного ответа)
+    // Это предотвращает переполнение TCP буфера
+    if (client.available()) {
+      while (client.available() && client.read() != -1) {
+        // Быстро очищаем буфер
+      }
+    }
   } else {
     failedFrames++;
     clientConnected = false;
@@ -219,15 +243,19 @@ String getStreamingStatus() {
   }
 }
 
+bool hasServerConnectionError() {
+  return serverConnectionFailures >= MAX_SERVER_CONNECTION_FAILURES;
+}
+
+void resetServerConnectionErrors() {
+  serverConnectionFailures = 0;
+}
+
 void setServerHost(const String& host) {
-  serverHost = host;
-  Serial.println("Server host updated to: " + serverHost);
-  
-  // Reconnect with new server address
-  if (streamingEnabled) {
-    client.stop();
-    clientConnected = false;
-    ensureConnected();
+  if (host.length() > 0) {
+    serverHost = host;
+    saveServerHost(serverHost);
+    stopStreaming();
   }
 }
 

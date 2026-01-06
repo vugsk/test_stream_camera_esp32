@@ -20,9 +20,12 @@ String getCurrentSSID();
 void saveServerHost(const String& host);
 
 // Load server host from NVS
-bool loadServerHost(String& host);
+String loadServerHost();
 
-// Get current server host
+// Get current server host (returns from NVS or default from config.h)
 String getCurrentServerHost();
+
+// Check if server host is valid (not empty)
+bool isServerHostValid();
 
 #endif // WIFI_SETTINGS_H

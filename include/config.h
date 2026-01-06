@@ -34,4 +34,8 @@
 #define STREAM_FPS 60                    // Target FPS
 #define STREAM_QUALITY 15                // JPEG quality (10-63, lower=better, 15 good for HD@60fps)
 
+// ==================== Настройки записи на SD карту ====================
+#define SD_RECORDING_ENABLED false       // Включена ли запись по умолчанию
+#define SD_RECORDING_INTERVAL 10         // Интервал записи в секундах (по умолчанию 10)
+
 #endif // CONFIG_H

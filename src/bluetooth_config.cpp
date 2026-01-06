@@ -9,6 +9,7 @@ static bool btActive = false;
 static bool newCredentialsReceived = false;
 static String receivedSSID = "";
 static String receivedPassword = "";
+static String receivedServerHost = "";
 static String btDeviceName = "ESP32-CAM-Config";
 
 void initBluetoothConfig() {
@@ -32,7 +33,6 @@ void startBluetoothConfig() {
     btActive = true;
     newCredentialsReceived = false;
     Serial.println("Bluetooth started: " + btDeviceName);
-    Serial.println("Waiting for WiFi credentials from mobile app...");
   } else {
     Serial.println("Bluetooth start FAILED!");
   }
@@ -78,69 +78,67 @@ void handleBluetoothConfig() {
     received.trim();
     
     if (received.length() > 0) {
-      Serial.println("Received BT data: " + received);
-      
-      // Try to parse JSON: {"ssid":"network","password":"pass","server_host":"1.2.3.4"}
+      // Try to parse JSON: {"ssid":"network","password":"pass","server_host":"192.168.0.107"}
       JsonDocument doc;
       DeserializationError error = deserializeJson(doc, received);
       if (!error) {
         if (doc["ssid"].is<const char*>() && doc["password"].is<const char*>()) {
           receivedSSID = doc["ssid"].as<String>();
           receivedPassword = doc["password"].as<String>();
-          String serverHost = "";
+          
+          // Получаем адрес сервера (опционально)
           if (doc["server_host"].is<const char*>()) {
-            serverHost = doc["server_host"].as<String>();
+            receivedServerHost = doc["server_host"].as<String>();
           }
+          
           if (receivedSSID.length() > 0) {
             newCredentialsReceived = true;
-            Serial.println("WiFi credentials received via Bluetooth");
-            Serial.println("SSID: " + receivedSSID);
-            if (serverHost.length() > 0) {
-              Serial.println("Server host: " + serverHost);
-              saveServerHost(serverHost);
-            }
+            Serial.println("BT: WiFi credentials received");
+            
             // Send confirmation
             SerialBT.println("{\"status\":\"ok\",\"message\":\"Credentials received\"}");
             // Save credentials
             saveWiFiCredentials(receivedSSID, receivedPassword);
+            
+            // Save server host if provided
+            if (receivedServerHost.length() > 0) {
+              saveServerHost(receivedServerHost);
+              Serial.println("Server host saved: " + receivedServerHost);
+            }
           }
         }
       } else {
-        // Try simple format: SSID,PASSWORD or SSID,PASSWORD,SERVER_HOST
-        int commaIndex = received.indexOf(',');
-        if (commaIndex > 0) {
-          int commaIndex2 = received.indexOf(',', commaIndex + 1);
-          if (commaIndex2 > 0) {
-            // SSID,PASSWORD,SERVER_HOST
-            receivedSSID = received.substring(0, commaIndex);
-            receivedPassword = received.substring(commaIndex + 1, commaIndex2);
-            String serverHost = received.substring(commaIndex2 + 1);
-            receivedSSID.trim();
-            receivedPassword.trim();
-            serverHost.trim();
-            if (receivedSSID.length() > 0) {
-              newCredentialsReceived = true;
-              Serial.println("WiFi credentials received (simple format)");
-              Serial.println("SSID: " + receivedSSID);
-              if (serverHost.length() > 0) {
-                Serial.println("Server host: " + serverHost);
-                saveServerHost(serverHost);
-              }
-              SerialBT.println("OK");
-              saveWiFiCredentials(receivedSSID, receivedPassword);
-            }
+        // Try simple format: SSID,PASSWORD,SERVER_HOST (server_host is optional)
+        int firstComma = received.indexOf(',');
+        if (firstComma > 0) {
+          receivedSSID = received.substring(0, firstComma);
+          
+          int secondComma = received.indexOf(',', firstComma + 1);
+          if (secondComma > 0) {
+            // Format with server host: SSID,PASSWORD,SERVER_HOST
+            receivedPassword = received.substring(firstComma + 1, secondComma);
+            receivedServerHost = received.substring(secondComma + 1);
+            receivedServerHost.trim();
           } else {
-            // SSID,PASSWORD
-            receivedSSID = received.substring(0, commaIndex);
-            receivedPassword = received.substring(commaIndex + 1);
-            receivedSSID.trim();
-            receivedPassword.trim();
-            if (receivedSSID.length() > 0) {
-              newCredentialsReceived = true;
-              Serial.println("WiFi credentials received (simple format)");
-              Serial.println("SSID: " + receivedSSID);
-              SerialBT.println("OK");
-              saveWiFiCredentials(receivedSSID, receivedPassword);
+            // Format without server host: SSID,PASSWORD
+            receivedPassword = received.substring(firstComma + 1);
+            receivedServerHost = "";
+          }
+          
+          receivedSSID.trim();
+          receivedPassword.trim();
+          
+          if (receivedSSID.length() > 0) {
+            newCredentialsReceived = true;
+            Serial.println("BT: Credentials received");
+            
+            SerialBT.println("OK");
+            saveWiFiCredentials(receivedSSID, receivedPassword);
+            
+            // Save server host if provided
+            if (receivedServerHost.length() > 0) {
+              saveServerHost(receivedServerHost);
+              Serial.println("Server host saved: " + receivedServerHost);
             }
           }
         }

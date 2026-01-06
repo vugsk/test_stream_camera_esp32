@@ -6,13 +6,11 @@ static Preferences preferences;
 
 void initWiFiSettings() {
   preferences.begin("wifi", false);
-  Serial.println("WiFi settings storage initialized");
 }
 
 void saveWiFiCredentials(const String& ssid, const String& password) {
   preferences.putString("ssid", ssid);
   preferences.putString("password", password);
-  Serial.println("WiFi credentials saved to NVS");
 }
 
 bool loadWiFiCredentials(String& ssid, String& password) {
@@ -29,15 +27,21 @@ String getCurrentSSID() {
 
 void saveServerHost(const String& host) {
   preferences.putString("server_host", host);
-  Serial.println("Server host saved to NVS: " + host);
 }
 
-bool loadServerHost(String& host) {
-  host = preferences.getString("server_host", SERVER_HOST);
-  // Return true if we have stored server host (not default)
-  return preferences.isKey("server_host");
+String loadServerHost() {
+  return preferences.getString("server_host", SERVER_HOST);
 }
 
 String getCurrentServerHost() {
-  return preferences.getString("server_host", SERVER_HOST);
+  String host = preferences.getString("server_host", "");
+  if (host.length() == 0) {
+    host = SERVER_HOST;
+  }
+  return host;
+}
+
+bool isServerHostValid() {
+  String host = getCurrentServerHost();
+  return host.length() > 0;
 }

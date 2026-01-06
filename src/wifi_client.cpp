@@ -14,6 +14,7 @@ bool initWiFi() {
   Serial.println("Connecting to WiFi: " + currentSSID);
   
   WiFi.mode(WIFI_STA);
+  WiFi.setSleep(false);  // Отключаем WiFi sleep для минимальных задержек
   WiFi.begin(currentSSID.c_str(), currentPassword.c_str());
   
   int attempts = 0;
@@ -26,6 +27,10 @@ bool initWiFi() {
   if (WiFi.status() == WL_CONNECTED) {
     Serial.println("\nWiFi connected!");
     Serial.println("IP: " + WiFi.localIP().toString());
+    
+    // Оптимизация TCP для стриминга
+    WiFi.setTxPower(WIFI_POWER_19_5dBm);  // Максимальная мощность передачи
+    
     return true;
   } else {
     Serial.println("\nWiFi connection FAILED!");
@@ -60,6 +65,9 @@ String getLocalIP() {
 }
 
 void disconnectWiFi() {
-  WiFi.disconnect();
-  Serial.println("WiFi disconnected");
+  Serial.println("Disconnecting WiFi...");
+  WiFi.disconnect(true);  // true = очистить сохраненные данные
+  WiFi.mode(WIFI_OFF);    // Полностью выключаем WiFi
+  delay(100);
+  Serial.println("WiFi disconnected and radio off");
 }

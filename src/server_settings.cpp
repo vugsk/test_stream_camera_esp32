@@ -4,6 +4,7 @@
 #include "wifi_client.h"
 #include "wifi_settings.h"
 #include "stream_client.h"
+#include "sd_recorder.h"
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
@@ -11,9 +12,13 @@
 #include <Preferences.h>
 
 static unsigned long lastPollTime = 0;
-static unsigned long pollInterval = 5000;  // 5 sec - less network load
+static unsigned long pollInterval = 10000;  // 10 sec - реже проверяем настройки чтобы не мешать стримингу
+static unsigned long lastStatusTime = 0;
+static unsigned long statusInterval = 30000;  // 30 sec - отправка статуса
 static Preferences btPrefs;
 static Preferences cameraPrefs;
+static bool initialSettingsLoaded = false;  // Флаг первой загрузки настроек
+static bool settingsBusy = false;  // Флаг для предотвращения одновременных HTTP запросов
 
 // Cached URLs to avoid String operations in loop
 static String settingsURL;
@@ -47,10 +52,6 @@ void loadCameraSettings() {
   currentSettings.streaming = cameraPrefs.getBool("streaming", true);
   
   cameraPrefs.end();
-  
-  Serial.println("Camera settings loaded from NVS (or defaults)");
-  Serial.printf("  Frame size: %d, Quality: %d, FPS: %d\n", 
-                currentSettings.frameSize, currentSettings.quality, currentSettings.fps);
 }
 
 void saveCameraSettings() {
@@ -67,8 +68,6 @@ void saveCameraSettings() {
   cameraPrefs.putBool("streaming", currentSettings.streaming);
   
   cameraPrefs.end();
-  
-  Serial.println("Camera settings saved to NVS");
 }
 
 void initServerSettings() {
@@ -77,8 +76,6 @@ void initServerSettings() {
   
   // Load saved camera settings or use defaults
   loadCameraSettings();
-  
-  Serial.println("Server settings module initialized");
 }
 
 void setSettingsPollInterval(unsigned long interval) {
@@ -92,52 +89,23 @@ void applyCameraSettings(const CameraSettings& settings) {
     return;
   }
   
-  // Применяем настройки сенсора
-  if (settings.frameSize != currentSettings.frameSize) {
-    s->set_framesize(s, (framesize_t)settings.frameSize);
-    Serial.printf("Frame size set to: %d\n", settings.frameSize);
-  }
-  
-  if (settings.quality != currentSettings.quality) {
-    s->set_quality(s, settings.quality);
-    Serial.printf("Quality set to: %d\n", settings.quality);
-  }
-  
-  if (settings.brightness != currentSettings.brightness) {
-    s->set_brightness(s, settings.brightness);
-  }
-  
-  if (settings.contrast != currentSettings.contrast) {
-    s->set_contrast(s, settings.contrast);
-  }
-  
-  if (settings.saturation != currentSettings.saturation) {
-    s->set_saturation(s, settings.saturation);
-  }
-  
-  if (settings.vflip != currentSettings.vflip) {
-    s->set_vflip(s, settings.vflip ? 1 : 0);
-  }
-  
-  if (settings.hmirror != currentSettings.hmirror) {
-    s->set_hmirror(s, settings.hmirror ? 1 : 0);
-  }
+  // Применяем настройки сенсора (всегда применяем, даже если значение не изменилось)
+  s->set_framesize(s, (framesize_t)settings.frameSize);
+  s->set_quality(s, settings.quality);
+  s->set_brightness(s, settings.brightness);
+  s->set_contrast(s, settings.contrast);
+  s->set_saturation(s, settings.saturation);
+  s->set_vflip(s, settings.vflip ? 1 : 0);
+  s->set_hmirror(s, settings.hmirror ? 1 : 0);
   
   // Управление FPS через модуль стриминга
-  if (settings.fps != currentSettings.fps) {
-    setStreamFPS(settings.fps);
-    Serial.printf("FPS set to: %d\n", settings.fps);
-  }
+  setStreamFPS(settings.fps);
   
   // Управление стримингом
-  if (settings.streaming != currentSettings.streaming) {
-    if (settings.streaming) {
-      startStreaming();
-      Serial.println("Streaming enabled by server");
-    } else {
-      stopStreaming();
-      Serial.println("Streaming disabled by server");
-    }
+  if (settings.streaming && !currentSettings.streaming) {
+    startStreaming();
+  } else if (!settings.streaming && currentSettings.streaming) {
+    stopStreaming();
   }
   
   currentSettings = settings;
@@ -234,6 +202,29 @@ static void processSettings(const String& json) {
     newSettings.streaming = doc["streaming"].as<bool>();
   }
   
+  // Handle SD recording settings
+  if (doc["recording"].is<JsonObject>()) {
+    JsonObject rec = doc["recording"];
+    if (rec["enabled"].is<bool>()) {
+      bool recEnabled = rec["enabled"].as<bool>();
+      setRecordingEnabled(recEnabled);
+      if (recEnabled) {
+        startRecording();
+      } else {
+        stopRecording();
+      }
+    }
+    if (rec["interval"].is<int>()) {
+      int interval = rec["interval"].as<int>();
+      if (interval >= 5 && interval <= 60) {
+        setRecordingInterval(interval);
+      }
+    }
+    if (rec["clear"].is<bool>() && rec["clear"].as<bool>()) {
+      clearAllRecordings();
+    }
+  }
+  
   // Применяем только если что-то изменилось
   if (memcmp(&newSettings, &currentSettings, sizeof(CameraSettings)) != 0) {
     applyCameraSettings(newSettings);
@@ -243,20 +234,36 @@ static void processSettings(const String& json) {
 void handleServerSettings() {
   if (!isWiFiConnected()) return;
   
+  // КРИТИЧНО: Пропускаем если уже идёт HTTP операция
+  if (settingsBusy) return;
+  
   unsigned long now = millis();
   if (now - lastPollTime < pollInterval) return;
   lastPollTime = now;
   
-  // Cache URLs on first call
+  // Пропускаем если идёт активная отправка видео (не мешаем стримингу)
+  if (isStreaming()) {
+    // Проверяем только если стриминг не слишком активен
+    static unsigned long lastCheckTime = 0;
+    if (now - lastCheckTime < 100) {
+      return;  // Слишком частые кадры - откладываем проверку
+    }
+    lastCheckTime = now;
+  }
+  
+  settingsBusy = true;  // Устанавливаем флаг занятости
+  
+  // Cache URLs on first call (use dynamic server host from NVS)
   if (!urlsCached) {
-    settingsURL = String("http://") + SERVER_HOST + ":" + String(SERVER_PORT) + SETTINGS_PATH;
-    statusURL = String("http://") + SERVER_HOST + ":" + String(SERVER_PORT) + STATUS_PATH;
+    String serverHost = getCurrentServerHost();
+    settingsURL = String("http://") + serverHost + ":" + String(SERVER_PORT) + SETTINGS_PATH;
+    statusURL = String("http://") + serverHost + ":" + String(SERVER_PORT) + STATUS_PATH;
     urlsCached = true;
   }
   
   HTTPClient http;
-  http.setConnectTimeout(300);
-  http.setTimeout(500);
+  http.setConnectTimeout(200);  // Уменьшили с 300 до 200
+  http.setTimeout(400);  // Уменьшили с 500 до 400
   http.setReuse(false);  // Don't reuse connection for settings
   
   if (http.begin(settingsURL)) {
@@ -274,15 +281,36 @@ void handleServerSettings() {
     
     http.end();
   }
+  
+  settingsBusy = false;  // Снимаем флаг занятости
 }
 
 void sendStatusToServer() {
   if (!isWiFiConnected()) return;
   
-  // Cache URLs on first call
+  // КРИТИЧНО: Пропускаем если уже идёт HTTP операция
+  if (settingsBusy) return;
+  
+  unsigned long now = millis();
+  if (now - lastStatusTime < statusInterval) return;
+  lastStatusTime = now;
+  
+  // Пропускаем если идёт активная отправка видео
+  if (isStreaming()) {
+    static unsigned long lastStatusCheckTime = 0;
+    if (now - lastStatusCheckTime < 100) {
+      return;  // Слишком частые кадры - откладываем отправку статуса
+    }
+    lastStatusCheckTime = now;
+  }
+  
+  settingsBusy = true;  // Устанавливаем флаг занятости
+  
+  // Cache URLs on first call (use dynamic server host from NVS)
   if (!urlsCached) {
-    settingsURL = String("http://") + SERVER_HOST + ":" + String(SERVER_PORT) + SETTINGS_PATH;
-    statusURL = String("http://") + SERVER_HOST + ":" + String(SERVER_PORT) + STATUS_PATH;
+    String serverHost = getCurrentServerHost();
+    settingsURL = String("http://") + serverHost + ":" + String(SERVER_PORT) + SETTINGS_PATH;
+    statusURL = String("http://") + serverHost + ":" + String(SERVER_PORT) + STATUS_PATH;
     urlsCached = true;
   }
   
@@ -295,6 +323,23 @@ void sendStatusToServer() {
   doc["free_heap"] = ESP.getFreeHeap();
   doc["frames_sent"] = getFramesSent();
   doc["frames_failed"] = getFailedFrames();
+  
+  // SD card recording status
+  JsonObject recording = doc["recording"].to<JsonObject>();
+  recording["active"] = isRecording();
+  recording["status"] = getRecordingStatus();
+  
+  SDCardInfo sdInfo = getSDCardInfo();
+  if (sdInfo.mounted) {
+    JsonObject sdcard = doc["sdcard"].to<JsonObject>();
+    sdcard["mounted"] = true;
+    sdcard["total_mb"] = sdInfo.totalMB;
+    sdcard["used_mb"] = sdInfo.usedMB;
+    sdcard["free_mb"] = sdInfo.freeMB;
+    sdcard["file_count"] = sdInfo.fileCount;
+  } else {
+    doc["sdcard"]["mounted"] = false;
+  }
   
   // Current camera settings
   JsonObject camera = doc["camera"].to<JsonObject>();
@@ -311,8 +356,8 @@ void sendStatusToServer() {
   serializeJson(doc, json);
   
   HTTPClient http;
-  http.setConnectTimeout(300);
-  http.setTimeout(500);
+  http.setConnectTimeout(200);  // Уменьшили с 300 до 200
+  http.setTimeout(400);  // Уменьшили с 500 до 400
   http.setReuse(false);
   
   if (http.begin(statusURL)) {
@@ -320,4 +365,55 @@ void sendStatusToServer() {
     http.POST(json);
     http.end();
   }
+  
+  settingsBusy = false;  // Снимаем флаг занятости
 }
+
+bool fetchInitialSettingsFromServer() {
+  if (!isWiFiConnected()) {
+    Serial.println("Cannot fetch settings: WiFi not connected");
+    return false;
+  }
+  
+  // Cache URLs if needed
+  if (!urlsCached) {
+    String serverHost = getCurrentServerHost();
+    settingsURL = String("http://") + serverHost + ":" + String(SERVER_PORT) + SETTINGS_PATH;
+    statusURL = String("http://") + serverHost + ":" + String(SERVER_PORT) + STATUS_PATH;
+    urlsCached = true;
+  }
+  
+  Serial.println("Fetching initial settings from server: " + settingsURL);
+  
+  HTTPClient http;
+  http.setConnectTimeout(5000);  // 5 seconds timeout
+  http.setTimeout(5000);
+  http.setReuse(false);
+  
+  if (!http.begin(settingsURL)) {
+    Serial.println("Failed to begin HTTP connection");
+    return false;
+  }
+  
+  int httpCode = http.GET();
+  
+  if (httpCode == HTTP_CODE_OK) {
+    String payload = http.getString();
+    
+    // Process settings
+    processSettings(payload);
+    
+    initialSettingsLoaded = true;
+    http.end();
+    return true;
+  } else {
+    Serial.printf("Failed to fetch settings, HTTP code: %d\n", httpCode);
+    http.end();
+    return false;
+  }
+}
+
+bool areInitialSettingsLoaded() {
+  return initialSettingsLoaded;
+}
+

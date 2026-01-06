@@ -9,6 +9,7 @@
  *   - wifi_client.h/cpp    : WiFi подключение
  *   - stream_client.h/cpp  : Стриминг на сервер
  *   - server_settings.h/cpp: Получение настроек с сервера
+ *   - sd_recorder.h/cpp    : Запись видео на SD карту
  */
 
 #include <Arduino.h>
@@ -19,11 +20,8 @@
 #include "bluetooth_config.h"
 #include "stream_client.h"
 #include "server_settings.h"
+#include "sd_recorder.h"
 #include "esp_wifi.h"
-
-// Send status to server less frequently to reduce network load
-static const unsigned long STATUS_INTERVAL = 30000;  // 30 seconds
-static unsigned long lastStatusTime = 0;
 
 // Connection state machine
 enum ConnectionState {
@@ -68,10 +66,13 @@ void setup() {
   // 5. Initialize server settings (loads camera settings from NVS)
   initServerSettings();
   
-  // 6. Apply loaded camera settings to hardware
-  applyCameraSettings(getCurrentSettings());
+  // 6. Initialize SD card recorder (loads settings from NVS automatically)
+  initSDRecorder();
   
-  // 7. Start connection state machine
+  // 7. НЕ применяем настройки из NVS здесь - они будут загружены с сервера при первом подключении
+  // applyCameraSettings(getCurrentSettings());  // <-- Удалено
+  
+  // 8. Start connection state machine
   connectionState = STATE_INIT;
   stateStartTime = millis();
   
@@ -82,8 +83,10 @@ void loop() {
   // Primary task: send video frames (highest priority)
   updateStreaming();
   
-  // WiFi management (check every cycle for stability)
-  checkWiFiConnection();
+  // WiFi management - НЕ вызываем если Bluetooth активен (конфликт радиомодуля!)
+  if (connectionState != STATE_BLUETOOTH_WAITING) {
+    checkWiFiConnection();
+  }
   
   // handleConnectionStateMachine() {
   unsigned long now = millis();
@@ -91,15 +94,24 @@ void loop() {
   
   switch (connectionState) {
     case STATE_INIT:
+      // Check if we have server host configuration
+      if (!isServerHostValid()) {
+        Serial.println("No server host found in NVS or config.h, starting Bluetooth...");
+        connectionState = STATE_BLUETOOTH_WAITING;
+        stateStartTime = now;
+        startBluetoothConfig();
+        break;
+      }
+      
       // Check if we have saved WiFi credentials
       if (loadWiFiCredentials(ssid, password) && ssid.length() > 0) {
-        // Also check if server host is configured
-        String serverHost = getCurrentServerHost();
-        if (serverHost.length() == 0 || serverHost == "0.0.0.0") {
-          Serial.println("WiFi found but server host not configured. Starting Bluetooth...");
-          connectionState = STATE_BLUETOOTH_WAITING;
-          stateStartTime = now;
-          startBluetoothConfig();
+        connectionState = STATE_WIFI_CONNECTING;
+        wifiRetryCount = 0;
+        stateStartTime = now;
+        
+        if (initWiFi()) {
+          connectionState = STATE_WIFI_CONNECTED;
+          esp_wifi_set_ps(WIFI_PS_NONE);
         } else {
           Serial.println("Found saved WiFi credentials and server host, attempting connection...");
           connectionState = STATE_WIFI_CONNECTING;
@@ -133,11 +145,9 @@ void loop() {
           wifiRetryCount = 0;
           startBluetoothConfig();
         } else {
-          Serial.printf("WiFi retry %d/%d...\n", wifiRetryCount, MAX_WIFI_RETRIES);
           if (initWiFi()) {
             connectionState = STATE_WIFI_CONNECTED;
             esp_wifi_set_ps(WIFI_PS_NONE);
-            Serial.println("WiFi connected!");
           } else {
             stateStartTime = now;
           }
@@ -167,7 +177,6 @@ void loop() {
           if (initWiFi()) {
             connectionState = STATE_WIFI_CONNECTED;
             esp_wifi_set_ps(WIFI_PS_NONE);
-            Serial.println("WiFi connected with new credentials!");
           } else {
             connectionState = STATE_WIFI_RETRY;
             wifiRetryCount = 0;
@@ -193,23 +202,46 @@ void loop() {
         connectionState = STATE_WIFI_RETRY;
         wifiRetryCount = 0;
         stateStartTime = now;
+      } else if (hasServerConnectionError()) {
+        // Too many server connection failures - switch to Bluetooth for reconfiguration
+        Serial.println("Too many server connection errors! Switching to Bluetooth mode for reconfiguration...");
+        resetServerConnectionErrors();
+        stopStreaming();
+        disconnectWiFi();
+        connectionState = STATE_BLUETOOTH_WAITING;
+        stateStartTime = now;
+        startBluetoothConfig();
       } else {
         // Normal operation - check connection periodically
         checkWiFiConnection();
+        
+        // First-time: fetch settings from server before starting stream
+        if (!areInitialSettingsLoaded()) {
+          if (fetchInitialSettingsFromServer()) {
+            // Apply loaded settings
+            applyCameraSettings(getCurrentSettings());
+            delay(500);  // Give camera time to adjust
+            // Now start streaming
+            startStreaming();
+          } else {
+            // Still start streaming with defaults
+            startStreaming();
+          }
+        }
         
         // Auto-start streaming if not running
         if (!isStreaming()) {
           startStreaming();
         }
         
-        // Handle server settings and streaming
+        // Handle server settings (неблокирующий, со своим таймером)
         handleServerSettings();
         
-        // Send status periodically
-        if (now - lastStatusTime > STATUS_INTERVAL) {
-          lastStatusTime = now;
-          sendStatusToServer();
-        }
+        // Send status periodically (неблокирующий, со своим таймером)
+        sendStatusToServer();
+        
+        // Handle SD card hot-plug and recording (неблокирующий)
+        handleSDRecorder();
       }
       break;
   }
