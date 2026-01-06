@@ -64,6 +64,11 @@ bool getReceivedCredentials(String& ssid, String& password) {
   return true;
 }
 
+
+// Для совместимости с интерфейсом
+bool hasNewServerHost() { return false; }
+String getReceivedServerHost() { return ""; }
+
 void handleBluetoothConfig() {
   if (!btActive) return;
   
@@ -76,7 +81,6 @@ void handleBluetoothConfig() {
       // Try to parse JSON: {"ssid":"network","password":"pass","server_host":"192.168.0.107"}
       JsonDocument doc;
       DeserializationError error = deserializeJson(doc, received);
-      
       if (!error) {
         if (doc["ssid"].is<const char*>() && doc["password"].is<const char*>()) {
           receivedSSID = doc["ssid"].as<String>();
@@ -93,7 +97,6 @@ void handleBluetoothConfig() {
             
             // Send confirmation
             SerialBT.println("{\"status\":\"ok\",\"message\":\"Credentials received\"}");
-            
             // Save credentials
             saveWiFiCredentials(receivedSSID, receivedPassword);
             

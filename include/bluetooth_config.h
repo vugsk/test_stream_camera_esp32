@@ -21,6 +21,12 @@ bool hasNewWiFiCredentials();
 // Get received WiFi credentials
 bool getReceivedCredentials(String& ssid, String& password);
 
+// Check if new server host was received
+bool hasNewServerHost();
+
+// Get received server host
+String getReceivedServerHost();
+
 // Handle Bluetooth events (call in loop)
 void handleBluetoothConfig();
 
