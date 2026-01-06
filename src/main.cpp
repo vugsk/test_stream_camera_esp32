@@ -9,6 +9,7 @@
  *   - wifi_client.h/cpp    : WiFi подключение
  *   - stream_client.h/cpp  : Стриминг на сервер
  *   - server_settings.h/cpp: Получение настроек с сервера
+ *   - sd_recorder.h/cpp    : Запись видео на SD карту
  */
 
 #include <Arduino.h>
@@ -19,11 +20,8 @@
 #include "bluetooth_config.h"
 #include "stream_client.h"
 #include "server_settings.h"
+#include "sd_recorder.h"
 #include "esp_wifi.h"
-
-// Send status to server less frequently to reduce network load
-static const unsigned long STATUS_INTERVAL = 30000;  // 30 seconds
-static unsigned long lastStatusTime = 0;
 
 // Connection state machine
 enum ConnectionState {
@@ -68,10 +66,13 @@ void setup() {
   // 5. Initialize server settings (loads camera settings from NVS)
   initServerSettings();
   
-  // 6. НЕ применяем настройки из NVS здесь - они будут загружены с сервера при первом подключении
+  // 6. Initialize SD card recorder (loads settings from NVS automatically)
+  initSDRecorder();
+  
+  // 7. НЕ применяем настройки из NVS здесь - они будут загружены с сервера при первом подключении
   // applyCameraSettings(getCurrentSettings());  // <-- Удалено
   
-  // 7. Start connection state machine
+  // 8. Start connection state machine
   connectionState = STATE_INIT;
   stateStartTime = millis();
   
@@ -215,14 +216,14 @@ void loop() {
           startStreaming();
         }
         
-        // Handle server settings and streaming
+        // Handle server settings (неблокирующий, со своим таймером)
         handleServerSettings();
         
-        // Send status periodically
-        if (now - lastStatusTime > STATUS_INTERVAL) {
-          lastStatusTime = now;
-          sendStatusToServer();
-        }
+        // Send status periodically (неблокирующий, со своим таймером)
+        sendStatusToServer();
+        
+        // Handle SD card hot-plug and recording (неблокирующий)
+        handleSDRecorder();
       }
       break;
   }

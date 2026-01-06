@@ -3,6 +3,7 @@
 #include "camera.h"
 #include "wifi_client.h"
 #include "wifi_settings.h"
+#include "sd_recorder.h"
 #include <WiFi.h>
 
 static bool streamingEnabled = false;
@@ -187,7 +188,12 @@ void sendFrame() {
     return;
   }
   
-  // Отправляем
+  // Записываем на SD карту (если включено)
+  if (isRecordingEnabled() && isSDCardPresent()) {
+    recordFrame(fb->buf, fb->len);
+  }
+  
+  // Отправляем на сервер
   if (sendFrameData(fb)) {
     framesSent++;
     
