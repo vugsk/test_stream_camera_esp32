@@ -68,8 +68,8 @@ void setup() {
   // 5. Initialize server settings (loads camera settings from NVS)
   initServerSettings();
   
-  // 6. Apply loaded camera settings to hardware
-  applyCameraSettings(getCurrentSettings());
+  // 6. НЕ применяем настройки из NVS здесь - они будут загружены с сервера при первом подключении
+  // applyCameraSettings(getCurrentSettings());  // <-- Удалено
   
   // 7. Start connection state machine
   connectionState = STATE_INIT;
@@ -82,8 +82,10 @@ void loop() {
   // Primary task: send video frames (highest priority)
   updateStreaming();
   
-  // WiFi management (check every cycle for stability)
-  checkWiFiConnection();
+  // WiFi management - НЕ вызываем если Bluetooth активен (конфликт радиомодуля!)
+  if (connectionState != STATE_BLUETOOTH_WAITING) {
+    checkWiFiConnection();
+  }
   
   // handleConnectionStateMachine() {
   unsigned long now = millis();
@@ -91,9 +93,17 @@ void loop() {
   
   switch (connectionState) {
     case STATE_INIT:
+      // Check if we have server host configuration
+      if (!isServerHostValid()) {
+        Serial.println("No server host found in NVS or config.h, starting Bluetooth...");
+        connectionState = STATE_BLUETOOTH_WAITING;
+        stateStartTime = now;
+        startBluetoothConfig();
+        break;
+      }
+      
       // Check if we have saved WiFi credentials
       if (loadWiFiCredentials(ssid, password) && ssid.length() > 0) {
-        Serial.println("Found saved WiFi credentials, attempting connection...");
         connectionState = STATE_WIFI_CONNECTING;
         wifiRetryCount = 0;
         stateStartTime = now;
@@ -101,7 +111,6 @@ void loop() {
         if (initWiFi()) {
           connectionState = STATE_WIFI_CONNECTED;
           esp_wifi_set_ps(WIFI_PS_NONE);
-          Serial.println("WiFi connected successfully!");
         } else {
           connectionState = STATE_WIFI_RETRY;
           stateStartTime = now;
@@ -124,11 +133,9 @@ void loop() {
           wifiRetryCount = 0;
           startBluetoothConfig();
         } else {
-          Serial.printf("WiFi retry %d/%d...\n", wifiRetryCount, MAX_WIFI_RETRIES);
           if (initWiFi()) {
             connectionState = STATE_WIFI_CONNECTED;
             esp_wifi_set_ps(WIFI_PS_NONE);
-            Serial.println("WiFi connected!");
           } else {
             stateStartTime = now;
           }
@@ -151,7 +158,6 @@ void loop() {
           if (initWiFi()) {
             connectionState = STATE_WIFI_CONNECTED;
             esp_wifi_set_ps(WIFI_PS_NONE);
-            Serial.println("WiFi connected with new credentials!");
           } else {
             connectionState = STATE_WIFI_RETRY;
             wifiRetryCount = 0;
@@ -177,9 +183,32 @@ void loop() {
         connectionState = STATE_WIFI_RETRY;
         wifiRetryCount = 0;
         stateStartTime = now;
+      } else if (hasServerConnectionError()) {
+        // Too many server connection failures - switch to Bluetooth for reconfiguration
+        Serial.println("Too many server connection errors! Switching to Bluetooth mode for reconfiguration...");
+        resetServerConnectionErrors();
+        stopStreaming();
+        disconnectWiFi();
+        connectionState = STATE_BLUETOOTH_WAITING;
+        stateStartTime = now;
+        startBluetoothConfig();
       } else {
         // Normal operation - check connection periodically
         checkWiFiConnection();
+        
+        // First-time: fetch settings from server before starting stream
+        if (!areInitialSettingsLoaded()) {
+          if (fetchInitialSettingsFromServer()) {
+            // Apply loaded settings
+            applyCameraSettings(getCurrentSettings());
+            delay(500);  // Give camera time to adjust
+            // Now start streaming
+            startStreaming();
+          } else {
+            // Still start streaming with defaults
+            startStreaming();
+          }
+        }
         
         // Auto-start streaming if not running
         if (!isStreaming()) {

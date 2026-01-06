@@ -66,4 +66,10 @@ void sendStatusToServer();
 // Установить интервал опроса сервера (мс)
 void setSettingsPollInterval(unsigned long interval);
 
+// Загрузить настройки с сервера (синхронно, при первом подключении)
+bool fetchInitialSettingsFromServer();
+
+// Проверить, были ли загружены начальные настройки
+bool areInitialSettingsLoaded();
+
 #endif // SERVER_SETTINGS_H

@@ -6,7 +6,7 @@
 #define WIFI_PASSWORD ""       // Пароль WiFi
 
 // ==================== Настройки сервера ====================
-#define SERVER_HOST "192.168.0.102"      // IP вашего веб-сервера
+#define SERVER_HOST ""      // IP вашего веб-сервера
 #define SERVER_PORT 8081                 // Порт сервера
 #define STREAM_PATH "/stream"            // Путь для отправки видео потока
 #define SETTINGS_PATH "/api/camera"      // Путь для получения настроек

@@ -14,6 +14,7 @@ static unsigned long lastPollTime = 0;
 static unsigned long pollInterval = 5000;  // 5 sec - less network load
 static Preferences btPrefs;
 static Preferences cameraPrefs;
+static bool initialSettingsLoaded = false;  // Флаг первой загрузки настроек
 
 // Cached URLs to avoid String operations in loop
 static String settingsURL;
@@ -47,10 +48,6 @@ void loadCameraSettings() {
   currentSettings.streaming = cameraPrefs.getBool("streaming", true);
   
   cameraPrefs.end();
-  
-  Serial.println("Camera settings loaded from NVS (or defaults)");
-  Serial.printf("  Frame size: %d, Quality: %d, FPS: %d\n", 
-                currentSettings.frameSize, currentSettings.quality, currentSettings.fps);
 }
 
 void saveCameraSettings() {
@@ -67,8 +64,6 @@ void saveCameraSettings() {
   cameraPrefs.putBool("streaming", currentSettings.streaming);
   
   cameraPrefs.end();
-  
-  Serial.println("Camera settings saved to NVS");
 }
 
 void initServerSettings() {
@@ -77,8 +72,6 @@ void initServerSettings() {
   
   // Load saved camera settings or use defaults
   loadCameraSettings();
-  
-  Serial.println("Server settings module initialized");
 }
 
 void setSettingsPollInterval(unsigned long interval) {
@@ -92,52 +85,23 @@ void applyCameraSettings(const CameraSettings& settings) {
     return;
   }
   
-  // Применяем настройки сенсора
-  if (settings.frameSize != currentSettings.frameSize) {
-    s->set_framesize(s, (framesize_t)settings.frameSize);
-    Serial.printf("Frame size set to: %d\n", settings.frameSize);
-  }
-  
-  if (settings.quality != currentSettings.quality) {
-    s->set_quality(s, settings.quality);
-    Serial.printf("Quality set to: %d\n", settings.quality);
-  }
-  
-  if (settings.brightness != currentSettings.brightness) {
-    s->set_brightness(s, settings.brightness);
-  }
-  
-  if (settings.contrast != currentSettings.contrast) {
-    s->set_contrast(s, settings.contrast);
-  }
-  
-  if (settings.saturation != currentSettings.saturation) {
-    s->set_saturation(s, settings.saturation);
-  }
-  
-  if (settings.vflip != currentSettings.vflip) {
-    s->set_vflip(s, settings.vflip ? 1 : 0);
-  }
-  
-  if (settings.hmirror != currentSettings.hmirror) {
-    s->set_hmirror(s, settings.hmirror ? 1 : 0);
-  }
+  // Применяем настройки сенсора (всегда применяем, даже если значение не изменилось)
+  s->set_framesize(s, (framesize_t)settings.frameSize);
+  s->set_quality(s, settings.quality);
+  s->set_brightness(s, settings.brightness);
+  s->set_contrast(s, settings.contrast);
+  s->set_saturation(s, settings.saturation);
+  s->set_vflip(s, settings.vflip ? 1 : 0);
+  s->set_hmirror(s, settings.hmirror ? 1 : 0);
   
   // Управление FPS через модуль стриминга
-  if (settings.fps != currentSettings.fps) {
-    setStreamFPS(settings.fps);
-    Serial.printf("FPS set to: %d\n", settings.fps);
-  }
+  setStreamFPS(settings.fps);
   
   // Управление стримингом
-  if (settings.streaming != currentSettings.streaming) {
-    if (settings.streaming) {
-      startStreaming();
-      Serial.println("Streaming enabled by server");
-    } else {
-      stopStreaming();
-      Serial.println("Streaming disabled by server");
-    }
+  if (settings.streaming && !currentSettings.streaming) {
+    startStreaming();
+  } else if (!settings.streaming && currentSettings.streaming) {
+    stopStreaming();
   }
   
   currentSettings = settings;
@@ -247,10 +211,11 @@ void handleServerSettings() {
   if (now - lastPollTime < pollInterval) return;
   lastPollTime = now;
   
-  // Cache URLs on first call
+  // Cache URLs on first call (use dynamic server host from NVS)
   if (!urlsCached) {
-    settingsURL = String("http://") + SERVER_HOST + ":" + String(SERVER_PORT) + SETTINGS_PATH;
-    statusURL = String("http://") + SERVER_HOST + ":" + String(SERVER_PORT) + STATUS_PATH;
+    String serverHost = getCurrentServerHost();
+    settingsURL = String("http://") + serverHost + ":" + String(SERVER_PORT) + SETTINGS_PATH;
+    statusURL = String("http://") + serverHost + ":" + String(SERVER_PORT) + STATUS_PATH;
     urlsCached = true;
   }
   
@@ -279,10 +244,11 @@ void handleServerSettings() {
 void sendStatusToServer() {
   if (!isWiFiConnected()) return;
   
-  // Cache URLs on first call
+  // Cache URLs on first call (use dynamic server host from NVS)
   if (!urlsCached) {
-    settingsURL = String("http://") + SERVER_HOST + ":" + String(SERVER_PORT) + SETTINGS_PATH;
-    statusURL = String("http://") + SERVER_HOST + ":" + String(SERVER_PORT) + STATUS_PATH;
+    String serverHost = getCurrentServerHost();
+    settingsURL = String("http://") + serverHost + ":" + String(SERVER_PORT) + SETTINGS_PATH;
+    statusURL = String("http://") + serverHost + ":" + String(SERVER_PORT) + STATUS_PATH;
     urlsCached = true;
   }
   
@@ -321,3 +287,52 @@ void sendStatusToServer() {
     http.end();
   }
 }
+
+bool fetchInitialSettingsFromServer() {
+  if (!isWiFiConnected()) {
+    Serial.println("Cannot fetch settings: WiFi not connected");
+    return false;
+  }
+  
+  // Cache URLs if needed
+  if (!urlsCached) {
+    String serverHost = getCurrentServerHost();
+    settingsURL = String("http://") + serverHost + ":" + String(SERVER_PORT) + SETTINGS_PATH;
+    statusURL = String("http://") + serverHost + ":" + String(SERVER_PORT) + STATUS_PATH;
+    urlsCached = true;
+  }
+  
+  Serial.println("Fetching initial settings from server: " + settingsURL);
+  
+  HTTPClient http;
+  http.setConnectTimeout(5000);  // 5 seconds timeout
+  http.setTimeout(5000);
+  http.setReuse(false);
+  
+  if (!http.begin(settingsURL)) {
+    Serial.println("Failed to begin HTTP connection");
+    return false;
+  }
+  
+  int httpCode = http.GET();
+  
+  if (httpCode == HTTP_CODE_OK) {
+    String payload = http.getString();
+    
+    // Process settings
+    processSettings(payload);
+    
+    initialSettingsLoaded = true;
+    http.end();
+    return true;
+  } else {
+    Serial.printf("Failed to fetch settings, HTTP code: %d\n", httpCode);
+    http.end();
+    return false;
+  }
+}
+
+bool areInitialSettingsLoaded() {
+  return initialSettingsLoaded;
+}
+
