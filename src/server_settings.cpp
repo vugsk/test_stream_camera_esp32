@@ -19,6 +19,8 @@ static Preferences btPrefs;
 static Preferences cameraPrefs;
 static bool initialSettingsLoaded = false;  // Флаг первой загрузки настроек
 static bool settingsBusy = false;  // Флаг для предотвращения одновременных HTTP запросов
+static int initialSettingsAttempts = 0;  // Счётчик попыток загрузки начальных настроек
+static const int MAX_INITIAL_SETTINGS_ATTEMPTS = 5;  // Максимум попыток перед переключением на Bluetooth
 
 // Cached URLs to avoid String operations in loop
 static String settingsURL;
@@ -404,10 +406,12 @@ bool fetchInitialSettingsFromServer() {
     processSettings(payload);
     
     initialSettingsLoaded = true;
+    initialSettingsAttempts = 0;  // Сбрасываем счётчик при успехе
     http.end();
     return true;
   } else {
     Serial.printf("Failed to fetch settings, HTTP code: %d\n", httpCode);
+    initialSettingsAttempts++;  // Увеличиваем счётчик при неудаче
     http.end();
     return false;
   }
@@ -415,5 +419,13 @@ bool fetchInitialSettingsFromServer() {
 
 bool areInitialSettingsLoaded() {
   return initialSettingsLoaded;
+}
+
+bool hasInitialSettingsError() {
+  return initialSettingsAttempts >= MAX_INITIAL_SETTINGS_ATTEMPTS;
+}
+
+void resetInitialSettingsAttempts() {
+  initialSettingsAttempts = 0;
 }
 

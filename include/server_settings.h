@@ -72,4 +72,10 @@ bool fetchInitialSettingsFromServer();
 // Проверить, были ли загружены начальные настройки
 bool areInitialSettingsLoaded();
 
+// Проверить критическую ошибку загрузки начальных настроек (для переключения на Bluetooth)
+bool hasInitialSettingsError();
+
+// Сбросить счётчик ошибок загрузки настроек
+void resetInitialSettingsAttempts();
+
 #endif // SERVER_SETTINGS_H

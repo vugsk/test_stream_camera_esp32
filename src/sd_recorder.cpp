@@ -353,8 +353,34 @@ bool initSDRecorder() {
   
   // Инициализация SD_MMC (использует 1-bit режим для освобождения пина flash)
   // Для AI-Thinker ESP32-CAM используется 1-bit режим
-  if (!SD_MMC.begin("/sdcard", true)) {  // true = 1-bit mode
-    Serial.println("SD card mount failed or not present");
+  
+  // Пробуем инициализировать несколько раз (SD карта может быть не готова)
+  int attempts = 0;
+  bool mounted = false;
+  while (attempts < 3 && !mounted) {
+    attempts++;
+    Serial.printf("SD card init attempt %d/3...\n", attempts);
+    
+    if (SD_MMC.begin("/sdcard", true)) {  // true = 1-bit mode
+      mounted = true;
+      break;
+    }
+    
+    if (attempts < 3) {
+      delay(500);  // Пауза перед повторной попыткой
+    }
+  }
+  
+  if (!mounted) {
+    Serial.println("========================================");
+    Serial.println("SD CARD INIT FAILED!");
+    Serial.println("Possible reasons:");
+    Serial.println("1. No SD card inserted");
+    Serial.println("2. Insufficient power supply (use 5V/2A)");
+    Serial.println("3. Missing pull-up resistors (10k on CMD/DATA)");
+    Serial.println("4. Bad contact or dirty SD card");
+    Serial.println("5. Incompatible SD card (use Class 10, ≤32GB)");
+    Serial.println("========================================");
     sdCardPresent = false;
     sdCardWasPresent = false;
     return false;
@@ -362,7 +388,7 @@ bool initSDRecorder() {
   
   uint8_t cardType = SD_MMC.cardType();
   if (cardType == CARD_NONE) {
-    Serial.println("No SD card attached");
+    Serial.println("No SD card detected (cardType = NONE)");
     sdCardPresent = false;
     return false;
   }

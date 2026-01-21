@@ -211,6 +211,14 @@ void loop() {
         connectionState = STATE_BLUETOOTH_WAITING;
         stateStartTime = now;
         startBluetoothConfig();
+      } else if (hasInitialSettingsError()) {
+        // Too many failed attempts to fetch initial settings - switch to Bluetooth
+        Serial.println("Failed to fetch initial settings after multiple attempts! Switching to Bluetooth mode...");
+        resetInitialSettingsAttempts();
+        disconnectWiFi();
+        connectionState = STATE_BLUETOOTH_WAITING;
+        stateStartTime = now;
+        startBluetoothConfig();
       } else {
         // Normal operation - check connection periodically
         checkWiFiConnection();
@@ -223,14 +231,13 @@ void loop() {
             delay(500);  // Give camera time to adjust
             // Now start streaming
             startStreaming();
-          } else {
-            // Still start streaming with defaults
-            startStreaming();
           }
+          // НЕ стартуем стриминг если не смогли загрузить настройки!
+          // Это позволит счётчику ошибок накопиться и переключиться на Bluetooth
         }
         
-        // Auto-start streaming if not running
-        if (!isStreaming()) {
+        // Auto-start streaming if not running (только если настройки загружены)
+        if (areInitialSettingsLoaded() && !isStreaming()) {
           startStreaming();
         }
         

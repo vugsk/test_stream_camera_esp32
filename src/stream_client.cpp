@@ -62,7 +62,10 @@ int getStreamFPS() {
 // Подключение к серверу с persistent connection
 static bool ensureConnected() {
   if (client.connected()) {
-    serverConnectionFailures = 0;
+    // Сбрасываем только если уже подключены (не накапливаем ошибки если есть соединение)
+    if (clientConnected) {
+      serverConnectionFailures = 0;
+    }
     return true;
   }
   
@@ -90,7 +93,7 @@ static bool ensureConnected() {
   if (client.connect(serverHost.c_str(), SERVER_PORT)) {
     clientConnected = true;
     client.setNoDelay(true);
-    serverConnectionFailures = 0;
+    serverConnectionFailures = 0;  // Сбрасываем только при УСПЕШНОМ подключении
     return true;
   }
   
@@ -111,7 +114,7 @@ bool startStreaming() {
   failedFrames = 0;
   streamStartTime = millis();
   lastFrameTime = 0;
-  serverConnectionFailures = 0;
+  // НЕ сбрасываем serverConnectionFailures - сохраняем счётчик для обнаружения проблем!
   
   // Пробуем подключиться сразу
   ensureConnected();
